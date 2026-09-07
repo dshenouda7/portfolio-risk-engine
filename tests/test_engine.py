@@ -100,5 +100,50 @@ def test_min_variance_beats_equal_weight(market):
 
 def test_full_pipeline_runs(market, weights):
     rep = run_full_analysis(market, weights)
-    assert len(rep.key_findings()) == 7
+    assert len(rep.key_findings()) == 10
     assert "PORTFOLIO RISK REPORT" in rep.to_text()
+
+
+# --------------------------------------------------------------------------
+# Extensions
+# --------------------------------------------------------------------------
+
+from riskengine import christoffersen_independence, liquidity_adjusted_var, rolling_betas
+
+
+def test_sector_factor_reduces_residual_correlation(market):
+    fm_ff = fit_factor_model(market)
+    fm_sec = fit_factor_model(market, sectors=market.sectors)
+    assert fm_sec.residual_correlation_check() < fm_ff.residual_correlation_check()
+    assert any(c.startswith("SEC:") for c in fm_sec.factor_names)
+
+
+def test_christoffersen_independent_breaches_pass():
+    rng = np.random.default_rng(0)
+    b = rng.random(2000) < 0.01
+    _, p = christoffersen_independence(b)
+    assert p > 0.05
+
+
+def test_christoffersen_clustered_breaches_fail():
+    b = np.zeros(2000, dtype=bool)
+    b[500:520] = True  # one 20-day cluster
+    _, p = christoffersen_independence(b)
+    assert p < 0.01
+
+
+def test_rolling_betas_shape_and_sanity(market, weights):
+    rb = rolling_betas(market, weights, window=250, step=10)
+    assert list(rb.columns) == list(market.factors.columns)
+    assert len(rb) > 50
+    assert 0.5 < rb["Mkt-RF"].mean() < 2.0
+
+
+def test_liquidity_var_scales_with_aum(market, weights):
+    vols = market.returns.std()
+    small = liquidity_adjusted_var(weights, market.adv, 1e6, 0.03, daily_vols=vols)
+    big = liquidity_adjusted_var(weights, market.adv, 5e7, 0.03, daily_vols=vols)
+    assert big.attrs["portfolio"]["liquidity_adjusted_var"] > small.attrs["portfolio"]["liquidity_adjusted_var"]
+    assert big.attrs["portfolio"]["liquidity_adjusted_var"] >= 0.03
+    assert (small["Days to liquidate"] >= 1).all()
+    assert small.attrs["portfolio"]["capacity_aum"] > 0

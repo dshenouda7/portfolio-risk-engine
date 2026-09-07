@@ -43,6 +43,8 @@ class MarketData:
     returns: pd.DataFrame       # simple returns, columns = tickers
     factors: pd.DataFrame       # factor returns, columns = FACTOR_NAMES
     rf: pd.Series               # daily risk-free rate
+    sectors: pd.Series | None = None   # ticker -> sector label (optional)
+    adv: pd.Series | None = None       # ticker -> avg daily dollar volume (optional)
 
     @property
     def excess_returns(self) -> pd.DataFrame:
@@ -57,26 +59,60 @@ class MarketData:
 # Live data
 # --------------------------------------------------------------------------
 
+def _cache_key(tickers: list[str], start: str, end: str | None, kind: str) -> Path:
+    import hashlib
+    h = hashlib.md5("_".join(sorted(tickers)).encode()).hexdigest()[:10]
+    return CACHE_DIR / f"{kind}_{h}_{start}_{end}.parquet"
+
+
 def fetch_prices(tickers: list[str], start: str, end: str | None = None,
                  use_cache: bool = True) -> pd.DataFrame:
     """Adjusted close prices from yfinance, cached to parquet."""
-    key = "_".join(sorted(tickers))
-    cache = CACHE_DIR / f"prices_{abs(hash(key)) % 10**10}_{start}_{end}.parquet"
-    if use_cache and cache.exists():
-        return pd.read_parquet(cache)
+    return _fetch_yf(tickers, start, end, use_cache)[0]
+
+
+def _fetch_yf(tickers: list[str], start: str, end: str | None = None,
+              use_cache: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(adjusted close, dollar volume) from yfinance, both cached."""
+    c_px = _cache_key(tickers, start, end, "prices")
+    c_dv = _cache_key(tickers, start, end, "dollarvol")
+    if use_cache and c_px.exists() and c_dv.exists():
+        return pd.read_parquet(c_px), pd.read_parquet(c_dv)
 
     import yfinance as yf  # imported lazily so tests don't need it
 
     raw = yf.download(tickers, start=start, end=end, auto_adjust=True,
                       progress=False, group_by="column")
     if isinstance(raw.columns, pd.MultiIndex):
-        px = raw["Close"]
+        px, vol = raw["Close"], raw["Volume"]
     else:  # single ticker
         px = raw[["Close"]].rename(columns={"Close": tickers[0]})
+        vol = raw[["Volume"]].rename(columns={"Volume": tickers[0]})
     px = px.dropna(how="all").ffill()
-    px.index = pd.to_datetime(px.index).tz_localize(None)
-    px.to_parquet(cache)
-    return px
+    dv = (px * vol.reindex(px.index)).ffill()
+    for df in (px, dv):
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+    px.to_parquet(c_px)
+    dv.to_parquet(c_dv)
+    return px, dv
+
+
+def fetch_sectors(tickers: list[str], use_cache: bool = True) -> pd.Series:
+    """Sector labels from yfinance's `info`; slow-ish (one call per ticker), so cached."""
+    cache = CACHE_DIR / "sectors.parquet"
+    known = pd.read_parquet(cache)["sector"] if (use_cache and cache.exists()) else pd.Series(dtype=object)
+    missing = [t for t in tickers if t not in known.index]
+    if missing:
+        import yfinance as yf
+        new = {}
+        for t in missing:
+            try:
+                new[t] = yf.Ticker(t).info.get("sector", "Unknown") or "Unknown"
+            except Exception:
+                new[t] = "Unknown"
+        known = pd.concat([known, pd.Series(new)])
+        known.to_frame("sector").to_parquet(cache)
+    return known.reindex(tickers)
 
 
 def _parse_french_csv(text: str, ncols: int) -> pd.DataFrame:
@@ -120,19 +156,32 @@ def fetch_factors(use_cache: bool = True) -> pd.DataFrame:
 
 
 def load_market(tickers: list[str], start: str = "2018-01-01",
-                end: str | None = None) -> MarketData:
-    """Fetch, align, and package prices + factors."""
-    px = fetch_prices(tickers, start, end)
+                end: str | None = None, sectors: pd.Series | None = None,
+                fetch_sector_info: bool = True) -> MarketData:
+    """
+    Fetch, align, and package prices + factors + (optionally) sectors and
+    average daily dollar volume. If `sectors` is None and fetch_sector_info
+    is True, sectors are pulled from yfinance.
+    """
+    px, dv = _fetch_yf(tickers, start, end)
     rets = px.pct_change().dropna(how="all")
     ff = fetch_factors()
     idx = rets.index.intersection(ff.index)
     rets = rets.loc[idx].dropna(axis=1, how="all")
     ff = ff.loc[idx]
+    adv = dv.loc[idx].iloc[-60:].mean()  # 3-month average daily dollar volume
+    if sectors is None and fetch_sector_info:
+        try:
+            sectors = fetch_sectors(list(rets.columns))
+        except Exception:
+            sectors = None
     return MarketData(
         prices=px.loc[px.index >= idx[0]],
         returns=rets.fillna(0.0),
         factors=ff[FACTOR_NAMES],
         rf=ff["RF"],
+        sectors=sectors,
+        adv=adv,
     )
 
 
@@ -180,11 +229,24 @@ def synthetic_market(n_assets: int = 12, n_days: int = 1500, seed: int = 7,
     eps = rng.standard_t(df=4, size=(n_days, n)) / np.sqrt(4 / 2) * idio_vol
     alpha = rng.normal(0.0, 0.0001, n)
 
+    # Hidden sector factor: 4 sectors with their own common shock that the
+    # FF factors don't capture. This is what a sector factor should find.
+    sector_labels = ["Industrials", "Healthcare", "Technology", "Consumer"]
+    sec_idx = rng.integers(0, 4, n)
+    sec_shocks = rng.standard_t(df=6, size=(n_days, 4)) / np.sqrt(6 / 4) * 0.010
+    sec_load = rng.uniform(0.6, 1.2, n)
+    eps = eps + sec_shocks[:, sec_idx] * sec_load
+
     excess = F @ betas.T + eps + alpha
     rets = pd.DataFrame(excess + rf.values[:, None], index=dates, columns=tickers)
     prices = 50 * (1 + rets).cumprod()
 
-    md = MarketData(prices=prices, returns=rets, factors=factors, rf=rf)
+    sectors = pd.Series([sector_labels[i] for i in sec_idx], index=tickers, name="sector")
+    # Dollar ADV spanning micro to mid cap: $1m to $80m/day
+    adv = pd.Series(10 ** rng.uniform(5.3, 7.5, n), index=tickers, name="adv")
+
+    md = MarketData(prices=prices, returns=rets, factors=factors, rf=rf,
+                    sectors=sectors, adv=adv)
     md.true_betas = pd.DataFrame(betas, index=tickers, columns=FACTOR_NAMES)  # type: ignore[attr-defined]
     return md
 
@@ -193,14 +255,20 @@ def synthetic_market(n_assets: int = 12, n_days: int = 1500, seed: int = 7,
 # Portfolio file
 # --------------------------------------------------------------------------
 
-def load_portfolio(path: str | Path) -> pd.Series:
+def load_portfolio(path, with_sectors: bool = False):
     """
-    CSV with columns `ticker, weight` (weights in decimals or percent).
-    Returns weights normalised to sum to 1, indexed by ticker.
+    CSV with columns `ticker, weight` and optionally `sector`.
+    Weights may be decimals or percents; they are normalised to sum to 1.
+    Returns weights (and sectors if with_sectors=True and the column exists).
     """
     df = pd.read_csv(path)
     df.columns = [c.strip().lower() for c in df.columns]
-    w = pd.Series(df["weight"].astype(float).values, index=df["ticker"].str.upper().str.strip())
+    tick = df["ticker"].str.upper().str.strip()
+    w = pd.Series(df["weight"].astype(float).values, index=tick)
     if w.sum() > 1.5:  # percent
         w = w / 100.0
-    return w / w.sum()
+    w = w / w.sum()
+    if with_sectors:
+        sec = pd.Series(df["sector"].values, index=tick) if "sector" in df.columns else None
+        return w, sec
+    return w

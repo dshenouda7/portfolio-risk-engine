@@ -1,21 +1,21 @@
-ticker,weight
-AXON,6
-CROX,5
-SHAK,4
-WING,5
-FN,6
-KNSL,5
-ENSG,6
-CVLT,5
-ONTO,5
-MEDP,5
-TREX,4
-SITE,5
-DY,5
-CALM,4
-HALO,5
-ATKR,4
-BOOT,5
-AAON,5
-PRIM,4
-GPI,7
+ticker,weight,sector
+AXON,6,Industrials
+CROX,5,Consumer Cyclical
+SHAK,4,Consumer Cyclical
+WING,5,Consumer Cyclical
+FN,6,Technology
+KNSL,5,Financial Services
+ENSG,6,Healthcare
+CVLT,5,Technology
+ONTO,5,Technology
+MEDP,5,Healthcare
+TREX,4,Industrials
+SITE,5,Industrials
+DY,5,Industrials
+CALM,4,Consumer Defensive
+HALO,5,Healthcare
+ATKR,4,Industrials
+BOOT,5,Consumer Cyclical
+AAON,5,Industrials
+PRIM,4,Industrials
+GPI,7,Consumer Cyclical

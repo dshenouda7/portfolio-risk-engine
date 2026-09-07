@@ -38,6 +38,8 @@ with st.sidebar:
     window = st.slider("Rolling VaR window (days)", 120, 500, 250, step=10)
     max_w = st.slider("Max position weight in optimisers", 0.05, 0.25, 0.10, step=0.01)
     start = st.text_input("Price history start", "2018-01-01")
+    aum = st.number_input("Portfolio value ($)", value=1_100_000, step=100_000, format="%d")
+    participation = st.slider("Max share of ADV traded per day", 0.05, 0.50, 0.20, step=0.05)
 
     uploaded = None
     if mode.startswith("Upload"):
@@ -47,8 +49,8 @@ with st.sidebar:
 
 @st.cache_data(show_spinner="Pulling prices and factor data…")
 def _load_live(csv_bytes: bytes, start: str):
-    w = load_portfolio(io.BytesIO(csv_bytes))
-    md = load_market(list(w.index), start)
+    w, sectors = load_portfolio(io.BytesIO(csv_bytes), with_sectors=True)
+    md = load_market(list(w.index), start, sectors=sectors)
     return md, w
 
 
@@ -69,7 +71,8 @@ else:
     md, w = _load_synthetic()
 
 with st.spinner("Running risk engine…"):
-    rep = run_full_analysis(md, w, q=q, var_window=window, max_weight=max_w)
+    rep = run_full_analysis(md, w, q=q, var_window=window, max_weight=max_w,
+                            portfolio_value=float(aum), participation=participation)
 
 d = rep.decomposition
 
@@ -87,7 +90,8 @@ st.subheader("What the numbers say")
 for k in rep.key_findings():
     st.markdown(f"- {k}")
 
-tabs = st.tabs(["Factor risk", "Tail risk", "VaR backtest", "Stress tests", "Construction", "Holdings"])
+tabs = st.tabs(["Factor risk", "Tail risk", "VaR backtest", "Stress tests",
+                "Construction", "Liquidity", "Holdings"])
 
 # --------------------------------------------------------------------------
 # Factor risk
@@ -121,6 +125,27 @@ with tabs[0]:
         st.dataframe(fm.tstats.style.format("{:.1f}"), width='stretch')
     st.caption(f"Mean |residual correlation| across names: {fm.residual_correlation_check():.3f}. "
                "Above ~0.15 suggests a missing common factor (e.g. sector).")
+
+    if rep.factor_model_sector is not None:
+        st.markdown("**Does a sector factor help?**")
+        c1, c2 = st.columns(2)
+        c1.metric("Residual correlation, FF only", f"{rep.resid_corr_ff:.3f}")
+        c2.metric("Residual correlation, FF + sector", f"{rep.resid_corr_sector:.3f}",
+                  delta=f"{rep.resid_corr_sector - rep.resid_corr_ff:+.3f}", delta_color="inverse")
+        sec_cols = [c for c in rep.factor_model_sector.factor_names if c.startswith("SEC:")]
+        st.dataframe(rep.factor_model_sector.betas[sec_cols].style.format("{:.2f}"), width='stretch')
+        st.caption("Sector factors are equal-weighted sector returns, orthogonalised to the market, "
+                   "and computed leave-one-out for each stock's own regression.")
+
+    if rep.rolling is not None:
+        st.markdown("**Exposure drift** (1y rolling window, current weights)")
+        fig = go.Figure()
+        for i, f in enumerate(rep.rolling.columns):
+            fig.add_trace(go.Scatter(x=rep.rolling.index, y=rep.rolling[f], name=f,
+                                     line=dict(color=FACTOR_COLORS[i % len(FACTOR_COLORS)], width=1.5)))
+        fig.update_layout(height=340, yaxis_title="beta", margin=dict(l=10, r=10, t=10, b=10),
+                          legend=dict(orientation="h"))
+        st.plotly_chart(fig, width='stretch')
 
 # --------------------------------------------------------------------------
 # Tail risk
@@ -158,9 +183,11 @@ with tabs[2]:
     bp = rep.backtest_param
     c1, c2 = st.columns(2)
     c1.markdown(f"**Historical VaR** — {bt.n_breaches} breaches / {bt.n_obs} days "
-                f"(expected {bt.expected_breaches:.1f})  \n{bt.verdict}")
+                f"(expected {bt.expected_breaches:.1f})  \nKupiec: {bt.verdict}  \n"
+                f"Christoffersen: {bt.independence_verdict}")
     c2.markdown(f"**Parametric VaR** — {bp.n_breaches} breaches / {bp.n_obs} days "
-                f"(expected {bp.expected_breaches:.1f})  \n{bp.verdict}")
+                f"(expected {bp.expected_breaches:.1f})  \nKupiec: {bp.verdict}  \n"
+                f"Christoffersen: {bp.independence_verdict}")
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=bt.realised.index, y=bt.realised.values, mode="lines",
@@ -175,7 +202,8 @@ with tabs[2]:
     fig.update_layout(height=420, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h"))
     st.plotly_chart(fig, width='stretch')
     st.caption("Out-of-sample: each day's VaR uses only the preceding window. "
-               "The Kupiec test asks whether the breach count is statistically consistent with the target rate.")
+               "Kupiec tests whether the breach *count* matches the target rate; Christoffersen tests whether "
+               "breaches arrive independently or cluster, which Kupiec cannot see.")
 
 # --------------------------------------------------------------------------
 # Stress
@@ -234,9 +262,40 @@ with tabs[4]:
     st.dataframe(rep.alloc_weights.style.format("{:.1%}"), width='stretch')
 
 # --------------------------------------------------------------------------
-# Holdings
+# Liquidity
 # --------------------------------------------------------------------------
 with tabs[5]:
+    if rep.liquidity is None:
+        st.info("No volume data available for this portfolio.")
+    else:
+        L = rep.liquidity
+        p = L.attrs["portfolio"]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Weighted days to exit", f"{p['avg_liquidation_days']:.1f}")
+        c2.metric(f"VaR {q:.0%}, unadjusted", f"{p['base_var']:.2%}")
+        c3.metric(f"VaR {q:.0%}, liquidity-adjusted", f"{p['liquidity_adjusted_var']:.2%}",
+                  delta=f"{p['liquidity_adjusted_var'] - p['base_var']:+.2%}", delta_color="inverse")
+        c4.metric("Capacity (5-day exit)", f"${p['capacity_aum']/1e6:.1f}M",
+                  help=f"AUM at which {p['capacity_binding_name']} needs more than 5 days to exit "
+                       f"at {p['participation']:.0%} of ADV")
+        fig = go.Figure(go.Bar(x=L.index, y=L["Days to liquidate"],
+                               marker_color=[LOSS if d > 5 else INK for d in L["Days to liquidate"]]))
+        fig.add_hline(y=5, line_dash="dash", line_color=MUTED, annotation_text="5 days")
+        fig.update_layout(height=320, yaxis_title="days at participation cap",
+                          margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, width='stretch')
+        st.dataframe(L.style.format({"Weight": "{:.1%}", "Position $": "${:,.0f}", "ADV $": "${:,.0f}",
+                                     "Days to liquidate": "{:.1f}",
+                                     "Impact cost (% of position)": "{:.2%}",
+                                     "Impact cost $": "${:,.0f}",
+                                     "Capacity AUM (5-day exit)": "${:,.0f}"}), width='stretch')
+        st.caption("Liquidity-adjusted VaR = base VaR × √(weighted liquidation days) + square-root-law "
+                   "market impact. Change the portfolio value in the sidebar to see where liquidity starts to bind.")
+
+# --------------------------------------------------------------------------
+# Holdings
+# --------------------------------------------------------------------------
+with tabs[6]:
     px_ = md.prices[list(rep.weights.index)]
     norm = px_ / px_.iloc[0]
     fig = px.line(norm, color_discrete_sequence=px.colors.qualitative.Safe)

@@ -1,10 +1,10 @@
-1. Annualised volatility is 23.5%: 88% systematic (factor) risk, 12% stock-specific.
-2. The largest single risk driver is Mkt-RF (79% of total variance). Portfolio beta to the market is 1.18, SMB exposure +0.67.
-3. SMID11 alone contributes 2.9% of total variance through stock-specific risk; the top 3 names account for 6.2%.
-4. 1-day 99% CVaR is 4.40% under a fat-tailed (Student-t, ν=16.8) model vs 4.09% assuming normality. Normal assumption understates tail loss by 8%.
-5. Rolling historical VaR backtest: 25 breaches in 1750 days (expected 17.5). Kupiec: PASS: breach rate consistent with 1% (p=0.090). Christoffersen: PASS: no evidence of breach clustering (p=0.394).
-6. Worst stress scenario is 'Small-cap rout' at -16.1% factor-implied P&L.
-7. Effective number of independent bets: 16.2 (out of 20 holdings). A risk-parity allocation on the same names would run at 24.7% vol vs 24.6% currently.
-8. Adding sector factors cut mean |residual correlation| from 0.059 to 0.036: the Fama-French factors alone were missing a common sector driver.
-9. Rolling 1y market beta has ranged 1.10 to 1.25 (now 1.15); exposures are not static.
-10. Liquidity at $1.1M AUM and 20% of ADV: weighted exit is 1.0 days, slowest name SMID02 at 1.5 days; liquidity-adjusted 99% VaR 3.54% vs 3.43%. Capacity: SMID02 becomes a 5-day exit at $3.6M AUM.
+1. Annualised volatility is 26.5%: 89% systematic (factor) risk, 11% stock-specific.
+2. The largest single risk driver is Mkt-RF (71% of total variance). Portfolio beta to the market is 1.09, SMB exposure +0.92.
+3. AXON alone contributes 1.0% of total variance through stock-specific risk; the top 3 names account for 2.7%.
+4. 1-day 99% CVaR is 4.56% under a fat-tailed (Student-t, ν=8.9) model vs 4.01% assuming normality. Normal assumption understates tail loss by 14%.
+5. Rolling historical VaR backtest: 30 breaches in 1905 days (expected 19.1). Kupiec: REJECT: too many breaches (p=0.020). Christoffersen: PASS: no evidence of breach clustering (p=0.090).
+6. Worst stress scenario is 'COVID crash (Feb-Mar 2020)' at -42.4% factor-implied P&L.
+7. Effective number of independent bets: 17.1 (out of 20 holdings). A risk-parity allocation on the same names would run at 20.7% vol vs 23.3% currently.
+8. Adding sector factors cut mean |residual correlation| from 0.050 to 0.040: the Fama-French factors alone were missing a common sector driver.
+9. Rolling 1y market beta has ranged 0.94 to 1.16 (now 1.12); exposures are not static.
+10. Liquidity at $1.1M AUM and 20% of ADV: weighted exit is 1.0 days, slowest name AXON at 1.0 days; liquidity-adjusted 99% VaR 3.58% vs 3.57%. Capacity: ATKR becomes a 5-day exit at $798.7M AUM.

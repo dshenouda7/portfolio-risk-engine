@@ -152,6 +152,8 @@ class VaRBacktest:
     breach_rate: float
     kupiec_lr: float
     kupiec_pvalue: float
+    christoffersen_lr: float
+    christoffersen_pvalue: float
     var_series: pd.Series
     realised: pd.Series
     breaches: pd.Series
@@ -162,6 +164,12 @@ class VaRBacktest:
             direction = "too many" if self.breach_rate > 1 - self.q else "too few"
             return f"REJECT: {direction} breaches (p={self.kupiec_pvalue:.3f})"
         return f"PASS: breach rate consistent with {1-self.q:.0%} (p={self.kupiec_pvalue:.3f})"
+
+    @property
+    def independence_verdict(self) -> str:
+        if self.christoffersen_pvalue < 0.05:
+            return f"REJECT: breaches cluster in time (p={self.christoffersen_pvalue:.3f})"
+        return f"PASS: no evidence of breach clustering (p={self.christoffersen_pvalue:.3f})"
 
 
 def kupiec_pof(n_obs: int, n_breaches: int, q: float) -> tuple[float, float]:
@@ -181,6 +189,41 @@ def kupiec_pof(n_obs: int, n_breaches: int, q: float) -> tuple[float, float]:
         phat = x / T
         lr = -2 * ((T - x) * np.log(1 - p) + x * np.log(p)) \
              + 2 * ((T - x) * np.log(1 - phat) + x * np.log(phat))
+    pval = 1 - stats.chi2.cdf(lr, df=1)
+    return float(lr), float(pval)
+
+
+def christoffersen_independence(breaches: np.ndarray) -> tuple[float, float]:
+    """
+    Christoffersen (1998) independence test.
+
+    Kupiec only counts breaches. A model can pass Kupiec yet be useless if
+    its breaches all arrive in one week (e.g. it doesn't react to a vol
+    regime change). This test fits a first-order Markov chain to the
+    breach indicator and asks whether P(breach today | breach yesterday)
+    equals P(breach today | no breach yesterday).
+
+    LR_ind = -2 ln[ (1-π)^(n00+n10) π^(n01+n11) ]
+             + 2 ln[ (1-π0)^n00 π0^n01 (1-π1)^n10 π1^n11 ]   ~ chi2(1)
+    """
+    b = np.asarray(breaches, dtype=int)
+    prev, cur = b[:-1], b[1:]
+    n00 = int(((prev == 0) & (cur == 0)).sum())
+    n01 = int(((prev == 0) & (cur == 1)).sum())
+    n10 = int(((prev == 1) & (cur == 0)).sum())
+    n11 = int(((prev == 1) & (cur == 1)).sum())
+
+    def _l(n_zero, n_one, p):
+        if p <= 0 or p >= 1:
+            return 0.0 if n_one == 0 or n_zero == 0 else -np.inf
+        return n_zero * np.log(1 - p) + n_one * np.log(p)
+
+    pi = (n01 + n11) / max(n00 + n01 + n10 + n11, 1)
+    pi0 = n01 / max(n00 + n01, 1)
+    pi1 = n11 / max(n10 + n11, 1)
+    ll_null = _l(n00 + n10, n01 + n11, pi)
+    ll_alt = _l(n00, n01, pi0) + _l(n10, n11, pi1)
+    lr = max(-2 * (ll_null - ll_alt), 0.0)
     pval = 1 - stats.chi2.cdf(lr, df=1)
     return float(lr), float(pval)
 
@@ -209,9 +252,82 @@ def backtest_var(returns: pd.DataFrame, w: pd.Series, q: float = 0.99,
     breaches = (-realised) > var_series
     n, x = len(breaches), int(breaches.sum())
     lr, pv = kupiec_pof(n, x, q)
+    clr, cpv = christoffersen_independence(breaches.values)
     return VaRBacktest(
         q=q, method=method, n_obs=n, n_breaches=x,
         expected_breaches=n * (1 - q), breach_rate=x / n,
         kupiec_lr=lr, kupiec_pvalue=pv,
+        christoffersen_lr=clr, christoffersen_pvalue=cpv,
         var_series=var_series, realised=realised, breaches=breaches,
     )
+
+
+# --------------------------------------------------------------------------
+# Liquidity-adjusted VaR
+# --------------------------------------------------------------------------
+
+def liquidity_adjusted_var(w: pd.Series, adv: pd.Series, portfolio_value: float,
+                           base_var: float, participation: float = 0.20,
+                           impact_coeff: float = 0.10, daily_vols: pd.Series | None = None
+                           ) -> pd.DataFrame:
+    """
+    Small caps have a risk that a 1-day VaR on mid prices ignores: you
+    cannot get out in one day without moving the price.
+
+    For each position, the days needed to liquidate at `participation`
+    share of average daily dollar volume is
+
+        days_i = position_$ / (participation * ADV_i)
+
+    Market-risk VaR scales with sqrt(horizon) while you're still holding,
+    and the liquidation itself costs an impact estimated with a square-root
+    law (Almgren et al.):
+
+        impact_i ≈ impact_coeff * σ_i * sqrt(position_$ / ADV_i)
+
+    Returns a per-position table plus a 'Portfolio' row. Total L-VaR is
+    approximated as base VaR scaled by the weighted sqrt(liquidation days),
+    plus the summed impact cost. This is a first-order model, deliberately
+    simple; the point is to make the illiquidity cost visible next to the
+    market-risk number, not to price it exactly.
+    """
+    w = w[w > 0]
+    adv = adv.reindex(w.index)
+    pos = w * portfolio_value
+    days = (pos / (participation * adv)).clip(lower=1.0)
+    if daily_vols is None:
+        daily_vols = pd.Series(0.02, index=w.index)
+    sigma = daily_vols.reindex(w.index).fillna(0.02)
+    impact = impact_coeff * sigma * np.sqrt(pos / adv)          # fraction of position
+    impact_dollars = impact * pos
+
+    port_days = float((w * days).sum())                          # weight-averaged horizon
+    # Capacity: the AUM at which each position would need > 5 days to exit
+    # at this participation rate. The minimum across names is the book's
+    # binding capacity constraint.
+    capacity_by_name = 5.0 * participation * adv / w
+    capacity = float(capacity_by_name.min())
+    capacity_name = str(capacity_by_name.idxmin())
+    lvar_frac = base_var * np.sqrt(port_days) + impact_dollars.sum() / portfolio_value
+
+    tbl = pd.DataFrame({
+        "Weight": w,
+        "Position $": pos,
+        "ADV $": adv,
+        "Days to liquidate": days,
+        "Impact cost (% of position)": impact,
+        "Impact cost $": impact_dollars,
+        "Capacity AUM (5-day exit)": capacity_by_name,
+    }).sort_values("Days to liquidate", ascending=False)
+    tbl.attrs["portfolio"] = {
+        "base_var": base_var,
+        "avg_liquidation_days": port_days,
+        "horizon_scaled_var": base_var * np.sqrt(port_days),
+        "total_impact_frac": impact_dollars.sum() / portfolio_value,
+        "liquidity_adjusted_var": lvar_frac,
+        "participation": participation,
+        "capacity_aum": capacity,
+        "capacity_binding_name": capacity_name,
+        "portfolio_value": portfolio_value,
+    }
+    return tbl

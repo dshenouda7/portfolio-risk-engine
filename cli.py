@@ -25,6 +25,9 @@ def main() -> None:
     p.add_argument("--window", type=int, default=250, help="Rolling VaR window (days)")
     p.add_argument("--max-weight", type=float, default=0.10)
     p.add_argument("--synthetic", action="store_true", help="Use generated data (no network)")
+    p.add_argument("--aum", type=float, default=1_100_000, help="Portfolio value in $ (for liquidity)")
+    p.add_argument("--participation", type=float, default=0.20, help="Max share of ADV traded per day")
+    p.add_argument("--no-sector-lookup", action="store_true", help="Skip yfinance sector fetch")
     p.add_argument("--out", default=None, help="Write report text to this file")
     args = p.parse_args()
 
@@ -35,10 +38,12 @@ def main() -> None:
     else:
         if not args.portfolio:
             p.error("portfolio CSV required unless --synthetic")
-        w = load_portfolio(args.portfolio)
-        md = load_market(list(w.index), args.start, args.end)
+        w, sectors = load_portfolio(args.portfolio, with_sectors=True)
+        md = load_market(list(w.index), args.start, args.end, sectors=sectors,
+                         fetch_sector_info=not args.no_sector_lookup)
 
-    rep = run_full_analysis(md, w, q=args.q, var_window=args.window, max_weight=args.max_weight)
+    rep = run_full_analysis(md, w, q=args.q, var_window=args.window, max_weight=args.max_weight,
+                            portfolio_value=args.aum, participation=args.participation)
     text = rep.to_text()
     print(text)
     if args.out:

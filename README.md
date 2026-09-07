@@ -1,10 +1,10 @@
 # Portfolio Risk Engine
 
-Factor decomposition, tail risk, stress testing, liquidity and portfolio construction for a long-only US small/mid-cap equity book. Python, with a CLI, a Streamlit dashboard, and a [walkthrough notebook](notebooks/analysis.ipynb). Runs offline on synthetic data.
+Factor decomposition, tail risk, stress testing, liquidity and portfolio construction for a long-only US small/mid-cap equity book. Python, with a CLI, a [live dashboard](https://portfolio-risk-engine-daniel-shenouda.streamlit.app/), and a [walkthrough notebook](notebooks/analysis.ipynb). Runs offline on synthetic data.
 
-The question it answers: *what does this portfolio actually own, and how much can it lose?*
+Essential Question: *what does this portfolio actually own, and how much can it lose?*
 
-I'm a freshman at BU studying finance. I built this because I wanted to know what actually drives risk in a small/mid-cap long-only book, and reading about it wasn't getting me there. So I built the tooling and looked.
+I'm a freshman at BU studying Applied Math. I built this because I wanted to know what actually drives risk in a small/mid-cap long-only book, and reading about it wasn't getting me there. So I built the tooling and looked.
 
 Most of the answer turned out to be two numbers. On a 20-name small/mid-cap book, market beta and size exposure account for 91% of the variance, which means diversifying across twenty names buys less than it looks like it does. The part I didn't expect was how much of the work is checking whether your own model is lying to you.
 

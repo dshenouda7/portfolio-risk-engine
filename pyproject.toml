@@ -1,0 +1,8 @@
+[project]
+name = "riskengine"
+version = "0.1.0"
+description = "Factor, tail, stress and construction analytics for long-only small/mid-cap equity portfolios"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

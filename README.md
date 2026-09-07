@@ -54,7 +54,9 @@ This is the finding I'd have missed if I'd only built the model and not tested i
 
 ## Quick start
 
-```bash
+The dashboard runs [in your browser](https://portfolio-risk-engine-daniel-shenouda.streamlit.app) with nothing to install. To run it locally:
+
+```
 pip install -r requirements.txt
 
 # Offline demo on synthetic data (no network needed)
@@ -73,7 +75,6 @@ pytest
 The first live run downloads prices (yfinance) and Fama-French factors (Ken French data library) and caches them in `data_cache/`; subsequent runs are instant.
 
 `examples/portfolio.csv` is an illustrative equal-ish weighted basket of twenty US small/mid-caps ($500M–$5B), not anyone's actual holdings. Swap in your own `ticker,weight,sector` file to analyse a real book.
-
 ## What it computes
 
 **Factor risk model** (`riskengine/factors.py`)
